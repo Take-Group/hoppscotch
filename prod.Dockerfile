@@ -111,6 +111,8 @@ RUN apk add --no-cache python3 make g++ zlib-dev brotli-dev c-ares-dev nghttp2-d
 WORKDIR /usr/src/app
 ENV HOPP_ALLOW_RUNTIME_ENV=true
 ENV DATABASE_URL="postgresql://placeholder:placeholder@localhost:5432/placeholder"
+# Limit Node heap to avoid OOM (exit 137) on memory-constrained build environments (e.g. Railway)
+ENV NODE_OPTIONS="--max-old-space-size=1536"
 
 COPY pnpm-lock.yaml .
 RUN pnpm fetch
@@ -123,6 +125,7 @@ RUN pnpm install -f --prefer-offline
 FROM base_builder AS backend_builder
 WORKDIR /usr/src/app/packages/hoppscotch-backend
 ENV DATABASE_URL="postgresql://placeholder:placeholder@localhost:5432/placeholder"
+# Keep NODE_OPTIONS from base_builder to avoid OOM during prisma generate / build
 RUN pnpm exec prisma generate
 RUN pnpm run build
 RUN pnpm --filter=hoppscotch-backend deploy /dist/backend --prod --legacy
