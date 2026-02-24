@@ -34,6 +34,11 @@ function runChildProcessWithPrefix(command, args, prefix) {
   return childProcess
 }
 
+// Use Railway's PORT when in subpath mode so Caddy listens on the correct port
+if (process.env.ENABLE_SUBPATH_BASED_ACCESS === 'true' && process.env.PORT && !process.env.HOPP_AIO_ALTERNATE_PORT) {
+  process.env.HOPP_AIO_ALTERNATE_PORT = process.env.PORT
+}
+
 const envFileContent = Object.entries(process.env)
   .filter(([env]) => env.startsWith("VITE_"))
   .sort(([envA], [envB]) => envA.localeCompare(envB))
