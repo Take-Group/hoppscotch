@@ -5,8 +5,8 @@ import { execSync, spawn } from "child_process"
 import fs from "fs"
 import process from "process"
 
-function runChildProcessWithPrefix(command, args, prefix) {
-  const childProcess = spawn(command, args);
+function runChildProcessWithPrefix(command, args, prefix, envOverrides = undefined) {
+  const childProcess = spawn(command, args, envOverrides ? { env: { ...process.env, ...envOverrides } } : undefined);
 
   childProcess.stdout.on('data', (data) => {
     const output = data.toString().trim().split('\n');
@@ -57,7 +57,8 @@ fs.rmSync("build.env")
 
 const caddyFileName = process.env.ENABLE_SUBPATH_BASED_ACCESS === 'true' ? 'aio-subpath-access.Caddyfile' : 'aio-multiport-setup.Caddyfile'
 const caddyProcess = runChildProcessWithPrefix("caddy", ["run", "--config", `/etc/caddy/${caddyFileName}`, "--adapter", "caddyfile"], "App/Admin Dashboard Caddy")
-const backendProcess = runChildProcessWithPrefix("node", ["/dist/backend/dist/src/main.js"], "Backend Server")
+// Backend must use a different port than Caddy when both run in one container (e.g. Railway PORT=8080 → Caddy :8080, backend :8081)
+const backendProcess = runChildProcessWithPrefix("node", ["/dist/backend/dist/src/main.js"], "Backend Server", { PORT: "8081" })
 const webappProcess = runChildProcessWithPrefix("webapp-server", [], "Webapp Server")
 
 caddyProcess.on("exit", (code) => {

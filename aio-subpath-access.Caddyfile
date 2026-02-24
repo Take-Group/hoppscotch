@@ -16,7 +16,7 @@
 		try_files {path} /
 	}
 
-	# Handle requests under `/backend*` path
+	# Handle requests under `/backend*` path (backend listens on 8081 to avoid conflict with Caddy when Caddy uses PORT=8080)
 	handle_path /backend* {
 		@mock {
 			header_regexp host Host ^[^.]+\.mock\..*$
@@ -24,11 +24,11 @@
 		
 		handle @mock {
 			rewrite * /mock{uri}
-			reverse_proxy localhost:8080
+			reverse_proxy localhost:8081
 		}
 		
 		handle {
-			reverse_proxy localhost:8080
+			reverse_proxy localhost:8081
 		}
 	}
 
