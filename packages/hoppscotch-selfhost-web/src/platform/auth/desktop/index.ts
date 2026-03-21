@@ -241,6 +241,26 @@ async function refreshToken() {
     const isSuccessful = res.right.status === 200
 
     if (isSuccessful && currentUser$.value) {
+      // Update currentUser$ with the new access token so getBackendHeaders() uses it
+      const newAccessToken =
+        await persistenceService.getLocalConfig("access_token")
+      const newRefreshToken =
+        await persistenceService.getLocalConfig("refresh_token")
+
+      if (newAccessToken) {
+        const updatedUser = {
+          ...currentUser$.value,
+          accessToken: newAccessToken,
+          refreshToken: newRefreshToken ?? currentUser$.value.refreshToken,
+        }
+        currentUser$.next(updatedUser)
+        probableUser$.next(updatedUser)
+        await persistenceService.setLocalConfig(
+          "login_state",
+          JSON.stringify(updatedUser)
+        )
+      }
+
       authEvents$.next({
         event: "login",
         user: {
@@ -396,6 +416,7 @@ export const def: AuthPlatformDef = {
         if (accessToken && refreshToken) {
           await persistenceService.setLocalConfig("access_token", accessToken)
           await persistenceService.setLocalConfig("refresh_token", refreshToken)
+          await setInitialUser()
           return
         }
 

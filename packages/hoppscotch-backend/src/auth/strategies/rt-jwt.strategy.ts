@@ -25,12 +25,27 @@ export class RTJwtStrategy extends PassportStrategy(Strategy, 'jwt-refresh') {
     super({
       jwtFromRequest: ExtractJwt.fromExtractors([
         (request: Request) => {
+          // Try cookie first (web app)
           const RTCookie = request.cookies?.['refresh_token'];
-          if (!RTCookie) {
-            console.error('`refresh_token` not found');
-            throw new ForbiddenException(COOKIES_NOT_FOUND);
+          if (RTCookie) return RTCookie;
+
+          // Fall back to Authorization header (desktop app)
+          const authHeader =
+            request.headers?.authorization || request.headers?.['Authorization'];
+          if (authHeader) {
+            const headerValue = Array.isArray(authHeader)
+              ? authHeader[0]
+              : authHeader;
+            if (
+              typeof headerValue === 'string' &&
+              headerValue.startsWith('Bearer ')
+            ) {
+              return headerValue.slice(7);
+            }
           }
-          return RTCookie;
+
+          console.error('`refresh_token` not found');
+          throw new ForbiddenException(COOKIES_NOT_FOUND);
         },
       ]),
       secretOrKey: configService.get('INFRA.JWT_SECRET'),
