@@ -95,10 +95,16 @@ async function setInitialUser() {
 
   const error = res.errors && res.errors[0]
 
-  // no cookies sent. so the user is not logged in
+  // access_token cookie missing (e.g. expired and deleted by browser after maxAge)
+  // still attempt a refresh using the longer-lived refresh_token cookie before logging out
   if (error && error.message === "auth/cookies_not_found") {
-    await setUser(null)
-    isGettingInitialUser.value = false
+    const isRefreshSuccess = await refreshToken()
+    if (isRefreshSuccess) {
+      setInitialUser()
+    } else {
+      await setUser(null)
+      isGettingInitialUser.value = false
+    }
     return
   }
 
