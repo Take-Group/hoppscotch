@@ -59,7 +59,7 @@
     "@vueuse/core": "14.1.0",
     "acorn-walk": "8.3.4",
     "aws4fetch": "1.0.20",
-    "axios": "1.13.2",
+    "axios": "1.13.5",
     "buffer": "6.0.3",
     "cookie-es": "2.0.0",
     "dioc": "3.0.2",
