@@ -34,6 +34,12 @@ interface GQLResponse {
   errors?: Array<{ message: string }>
 }
 
+type InitialUserResult =
+  | { type: "success"; user: HoppUserWithAuthDetail }
+  | { type: "unauthorized" }
+  | { type: "no_tokens" }
+  | { type: "transient_error" }
+
 export const authEvents$ = new Subject<AuthEvent>()
 export const currentUser$ = new BehaviorSubject<HoppUserWithAuthDetail | null>(
   null
@@ -85,7 +91,7 @@ async function signInUserWithMicrosoftFB() {
 }
 
 async function getInitialUserDetails(): Promise<
-  GQLResponse | { error: string }
+  InitialUserResult
 > {
   try {
     const accessToken = await persistenceService.getLocalConfig("access_token")
@@ -93,7 +99,7 @@ async function getInitialUserDetails(): Promise<
       await persistenceService.getLocalConfig("refresh_token")
 
     if (!accessToken || !refreshToken) {
-      return { error: "auth/cookies_not_found" }
+      return { type: "no_tokens" }
     }
 
     const { response } = interceptorService.execute({
@@ -122,25 +128,28 @@ async function getInitialUserDetails(): Promise<
     const responseBytes = await response
 
     if (E.isLeft(responseBytes)) {
-      return { error: "auth/cookies_not_found" }
+      return { type: "transient_error" }
     }
 
     const res = parseBodyAsJSON<GQLResponse>(responseBytes.right.body)
-    if (res._tag == "Some" && res.value.data?.me) {
+    if (res._tag === "Some" && res.value.errors?.[0]?.message === "Unauthorized") {
+      return { type: "unauthorized" }
+    }
+
+    if (res._tag === "Some" && res.value.data?.me) {
       return {
-        data: {
-          me: {
-            ...res.value.data.me,
-            refreshToken,
-            accessToken,
-            emailVerified: true,
-          },
+        type: "success",
+        user: {
+          ...res.value.data.me,
+          refreshToken,
+          accessToken,
+          emailVerified: true,
         },
       }
     }
-    return { error: "auth/cookies_not_found" }
+    return { type: "transient_error" }
   } catch (_error) {
-    return { error: "auth/cookies_not_found" }
+    return { type: "transient_error" }
   }
 }
 
@@ -171,13 +180,19 @@ export async function setInitialUser() {
   isGettingInitialUser.value = true
   const res = await getInitialUserDetails()
 
-  if ("error" in res) {
+  if (res.type === "no_tokens") {
     await setUser(null)
     isGettingInitialUser.value = false
     return
   }
 
-  if (res.errors?.[0]?.message === "Unauthorized") {
+  if (res.type === "transient_error") {
+    // Avoid false logout on transient desktop errors (network/proxy/relay hiccups).
+    isGettingInitialUser.value = false
+    return
+  }
+
+  if (res.type === "unauthorized") {
     const isRefreshSuccess = await refreshToken()
     if (isRefreshSuccess) {
       await setInitialUser()
@@ -188,24 +203,16 @@ export async function setInitialUser() {
     return
   }
 
-  if (res.data?.me) {
-    const hoppBackendUser = res.data.me
-    const accessToken = await persistenceService.getLocalConfig("access_token")
-    if (!accessToken) return null
-
-    if (!accessToken) {
-      await setUser(null)
-      isGettingInitialUser.value = false
-      return
-    }
-
+  if (res.type === "success") {
+    const hoppBackendUser = res.user
     const HoppUserWithAuthDetail: HoppUserWithAuthDetail = {
       uid: hoppBackendUser.uid,
       displayName: hoppBackendUser.displayName,
       email: hoppBackendUser.email,
       photoURL: hoppBackendUser.photoURL,
       emailVerified: true,
-      accessToken,
+      accessToken: hoppBackendUser.accessToken,
+      refreshToken: hoppBackendUser.refreshToken,
     }
 
     await setUser(HoppUserWithAuthDetail)
@@ -218,65 +225,91 @@ export async function setInitialUser() {
   }
 }
 
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
 async function refreshToken() {
-  try {
-    const refreshToken =
-      await persistenceService.getLocalConfig("refresh_token")
-    if (!refreshToken) return null
+  const refreshToken = await persistenceService.getLocalConfig("refresh_token")
+  if (!refreshToken) return null
 
-    const { response } = interceptorService.execute({
-      id: Date.now(),
-      url: `${import.meta.env.VITE_BACKEND_API_URL}/auth/refresh`,
-      method: "GET",
-      version: "HTTP/1.1",
-      headers: {
-        Authorization: `Bearer ${refreshToken}`,
-      },
-    })
+  const maxAttempts = 3
 
-    const res = await response
-    if (E.isLeft(res)) return false
-
-    await setAuthCookies(res.right.headers)
-    const isSuccessful = res.right.status === 200
-
-    if (isSuccessful && currentUser$.value) {
-      // Update currentUser$ with the new access token so getBackendHeaders() uses it
-      const newAccessToken =
-        await persistenceService.getLocalConfig("access_token")
-      const newRefreshToken =
-        await persistenceService.getLocalConfig("refresh_token")
-
-      if (newAccessToken) {
-        const updatedUser = {
-          ...currentUser$.value,
-          accessToken: newAccessToken,
-          refreshToken: newRefreshToken ?? currentUser$.value.refreshToken,
-        }
-        currentUser$.next(updatedUser)
-        probableUser$.next(updatedUser)
-        await persistenceService.setLocalConfig(
-          "login_state",
-          JSON.stringify(updatedUser)
-        )
-      }
-
-      authEvents$.next({
-        event: "login",
-        user: {
-          uid: currentUser$.value.uid,
-          displayName: currentUser$.value.displayName,
-          email: currentUser$.value.email,
-          photoURL: currentUser$.value.photoURL,
-          emailVerified: currentUser$.value.emailVerified,
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const { response } = interceptorService.execute({
+        id: Date.now(),
+        url: `${import.meta.env.VITE_BACKEND_API_URL}/auth/refresh`,
+        method: "GET",
+        version: "HTTP/1.1",
+        headers: {
+          Authorization: `Bearer ${refreshToken}`,
         },
       })
-    }
 
-    return isSuccessful
-  } catch (_err) {
-    return false
+      const res = await response
+      if (E.isLeft(res)) {
+        if (attempt < maxAttempts) {
+          await wait(250 * attempt)
+          continue
+        }
+        return false
+      }
+
+      const status = res.right.status
+      await setAuthCookies(res.right.headers)
+      const isSuccessful = status === 200
+
+      if (isSuccessful && currentUser$.value) {
+        // Update currentUser$ with the new access token so getBackendHeaders() uses it
+        const newAccessToken =
+          await persistenceService.getLocalConfig("access_token")
+        const newRefreshToken =
+          await persistenceService.getLocalConfig("refresh_token")
+
+        if (newAccessToken) {
+          const updatedUser = {
+            ...currentUser$.value,
+            accessToken: newAccessToken,
+            refreshToken: newRefreshToken ?? currentUser$.value.refreshToken,
+          }
+          currentUser$.next(updatedUser)
+          probableUser$.next(updatedUser)
+          await persistenceService.setLocalConfig(
+            "login_state",
+            JSON.stringify(updatedUser)
+          )
+        }
+
+        authEvents$.next({
+          event: "login",
+          user: {
+            uid: currentUser$.value.uid,
+            displayName: currentUser$.value.displayName,
+            email: currentUser$.value.email,
+            photoURL: currentUser$.value.photoURL,
+            emailVerified: currentUser$.value.emailVerified,
+          },
+        })
+      }
+
+      if (isSuccessful) return true
+
+      // Retry only for transient backend pressure/errors.
+      if ((status === 429 || status >= 500) && attempt < maxAttempts) {
+        await wait(250 * attempt)
+        continue
+      }
+
+      return false
+    } catch (_err) {
+      if (attempt < maxAttempts) {
+        await wait(250 * attempt)
+        continue
+      }
+      return false
+    }
   }
+
+  return false
 }
 
 async function sendMagicLink(email: string) {
